@@ -1,0 +1,23 @@
+# Hankscribe 2.0 — Python dependencies (macOS)
+#
+# Install with:  pip install -r requirements.txt
+# (START.command also auto-installs the core ones on first run.)
+
+# ── Core (required) ──────────────────────────────────────────────
+sounddevice>=0.4.6      # audio capture from the Aggregate Device
+numpy>=1.24             # audio mixing / resampling / embedding math
+boto3>=1.34             # Amazon Bedrock (Claude Opus 5) client
+pynput>=1.7             # global hotkeys (⌃⌥1/3/4/R/M) — needs Accessibility perm
+
+# ── macOS integration (required for global hotkeys, on-device OCR,
+#    frontmost-app detection, and multi-display screenshots) ──────
+pyobjc-core>=10.0
+pyobjc-framework-Cocoa>=10.0        # AppKit / Foundation
+pyobjc-framework-Quartz>=10.0       # display enumeration, cursor position
+pyobjc-framework-Vision>=10.0       # local screen-text OCR (free, on-device)
+
+# ── Optional: richer project-context extraction in build-context.py ─
+# Only needed if your project folder contains these file types.
+python-docx>=1.1        # .docx
+python-pptx>=0.6.23     # .pptx
+pdfplumber>=0.10        # .pdf

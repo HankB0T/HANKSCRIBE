@@ -1,0 +1,38 @@
+# ── Hankscribe 2.0 — never commit personal or client data ──────────────────
+
+# Personal config (copy config.example.json → config.json and edit locally)
+config.json
+transcription-corrections.json
+
+# Generated context index + embeddings (rebuilt from your own project folder)
+# These can contain your project's/client's document contents — keep them local.
+*-context.json
+context-index.json
+embeddings.npz
+embeddings-meta.json
+
+# Captured screen recordings, screenshots, and any recording.json
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.bmp
+
+# Saved meeting transcripts and digests
+Transcripts/
+*_meeting.txt
+
+# Whisper model weights (download separately — see README)
+*.bin
+
+# Build/log artifacts
+build.log
+*.log
+
+# macOS + Python cruft
+.DS_Store
+Icon?
+__pycache__/
+*.pyc
+.venv/
+venv/

@@ -1,0 +1,76 @@
+{
+  "comment": "Hankscribe 2.0 config template. Copy this to config.json and edit. config.json is gitignored so your paths/names stay private.",
+
+  "paths": {
+    "project_dir": "~/Desktop/MyProject",
+    "master_context": "~/Desktop/MyProject/Master_Context.md",
+    "transcript_dir": "~/Desktop/MyProject/Transcripts",
+    "context_index": "context-index.json"
+  },
+
+  "audio": {
+    "preferred_devices": ["Aggregate Device", "BlackHole 2ch"],
+    "sample_rate": 48000,
+    "silence_threshold": 0.0006,
+    "vad_pause_sec": 0.5,
+    "vad_max_segment_sec": 8.0,
+    "mic_channel": 2
+  },
+
+  "whisper": {
+    "model": "~/whisper-models/ggml-large-v3-turbo.bin",
+    "port": 8199,
+    "threads": 4
+  },
+
+  "ai": {
+    "bedrock_region": "us-east-1",
+    "fast_model": "us.anthropic.claude-opus-5",
+    "fast_max_tokens": 1200,
+    "fast_effort": "medium",
+    "deep_model": "us.anthropic.claude-opus-5",
+    "deep_max_tokens": 4000,
+    "deep_effort": "xhigh",
+    "utility_model": "us.anthropic.claude-opus-5",
+    "utility_effort": "low",
+    "master_context_chars": 40000,
+    "retrieval_max_chars": 12000,
+    "retrieval_top_k": 20,
+    "retrieval_floor": 0.30,
+    "ollama_model": "llama3.2:3b",
+    "embed_model": "nomic-embed-text"
+  },
+
+  "features": {
+    "speaker_attribution": true,
+    "semantic_retrieval": true,
+    "prompt_caching": true,
+    "post_meeting_digest": true,
+    "answer_suggestions": true,
+    "burst_recording": true,
+    "max_attached_screenshots": 3
+  },
+
+  "recording": {
+    "burst_poll_sec": 1.5,
+    "burst_diff_pixel_delta": 30,
+    "burst_max_attached": 5,
+    "burst_static_epsilon": 0.002,
+    "burst_ocr_refresh_sec": 8.0,
+    "burst_ocr_dup_similarity": 0.92,
+    "burst_thin_ocr_chars": 50,
+    "burst_thin_ocr_pixel": 0.05,
+    "state_group_similarity": 0.80
+  },
+
+  "user": {
+    "name": "Your Name",
+    "role": "your role on this project (e.g. AWS Cloud Engineer leading the migration)",
+    "name_variants": ["your name", "common misspelling", "another misspelling"]
+  },
+
+  "project": {
+    "name": "MyProject",
+    "description": "a one-line description of your project, used in the AI's system prompt"
+  }
+}

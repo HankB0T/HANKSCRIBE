@@ -1,0 +1,13 @@
+{
+  "comment": "Whisper transcription error corrections. Copy this to transcription-corrections.json and add your own. Editable mid-meeting, no restart needed. 'corrections' maps misheard text -> the correct spelling (case-insensitive substring replace). 'important_terms' are project-specific words to bias toward.",
+  "corrections": {
+    "misheard name": "Correct Name",
+    "misspelled term": "correct term"
+  },
+  "important_terms": [
+    "ProjectName",
+    "key acronym",
+    "product name",
+    "people's names"
+  ]
+}

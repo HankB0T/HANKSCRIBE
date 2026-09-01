@@ -144,6 +144,16 @@ def extract_keywords(text):
     return [k for k, _ in Counter(keywords).most_common(20)]
 
 
+def _load_previous_index():
+    """Previous index keyed by relative path, for incremental rebuilds."""
+    try:
+        with open(OUTPUT_FILE, 'r', encoding='utf-8') as f:
+            old = json.load(f)
+        return {fi['path']: fi for fi in old.get('files', [])}
+    except Exception:
+        return {}
+
+
 def build_context():
     project_path = Path(PROJECT_DIR)
     if not project_path.exists():
@@ -152,6 +162,8 @@ def build_context():
         return None
 
     print(f"  Scanning: {project_path}")
+    previous = _load_previous_index()
+    reused = 0
 
     context_data = {
         'built_at': datetime.now().isoformat(),
@@ -168,14 +180,29 @@ def build_context():
                 print(f"    Skip (too large): {filepath.name}")
                 continue
 
+            rel_path = str(filepath.relative_to(project_path))
+            stat = filepath.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime).isoformat()
+
+            # Incremental: reuse the previous extraction when the file hasn't
+            # changed (same mtime + size) — text extraction, especially for
+            # PDFs/DOCX, dominates rebuild time.
+            prev = previous.get(rel_path)
+            if prev and prev.get('modified') == modified and prev.get('size') == stat.st_size:
+                context_data['files'].append(prev)
+                context_data['file_count'] += 1
+                context_data['total_chars'] += prev.get('char_count', len(prev.get('text', '')))
+                reused += 1
+                continue
+
             text = extract_text(filepath)
             if text and len(text) > 10:
                 file_info = {
                     'name': filepath.name,
-                    'path': str(filepath.relative_to(project_path)),
+                    'path': rel_path,
                     'type': filepath.suffix.lower(),
-                    'size': filepath.stat().st_size,
-                    'modified': datetime.fromtimestamp(filepath.stat().st_mtime).isoformat(),
+                    'size': stat.st_size,
+                    'modified': modified,
                     'hash': hashlib.md5(filepath.read_bytes()).hexdigest(),
                     'char_count': len(text),
                     'keywords': extract_keywords(text)[:10],
@@ -186,6 +213,8 @@ def build_context():
                 context_data['total_chars'] += len(text)
                 print(f"    ✓ {filepath.name} ({len(text):,} chars)")
 
+    if reused:
+        print(f"    ↻ {reused} unchanged file(s) reused from previous index")
     return context_data
 
 

@@ -24,6 +24,15 @@
   },
 
   "ai": {
+    "provider": "auto",
+    "anthropic_api_key": "",
+    "openai_api_key": "",
+    "gemini_api_key": "",
+    "openai_model": "gpt-5-mini",
+    "gemini_model": "gemini-2.5-flash",
+    "custom_base_url": "",
+    "custom_model": "",
+    "custom_api_key": "",
     "bedrock_region": "us-east-1",
     "fast_model": "us.anthropic.claude-opus-5",
     "fast_max_tokens": 1200,
@@ -37,6 +46,7 @@
     "retrieval_max_chars": 12000,
     "retrieval_top_k": 20,
     "retrieval_floor": 0.30,
+    "max_embed_chunks": 20000,
     "ollama_model": "llama3.2:3b",
     "embed_model": "nomic-embed-text"
   },
@@ -67,6 +77,12 @@
     "name": "Your Name",
     "role": "your role on this project (e.g. AWS Cloud Engineer leading the migration)",
     "name_variants": ["your name", "common misspelling", "another misspelling"]
+  },
+
+  "speakers": {
+    "enabled": true,
+    "roster": ["Colleague One", "Colleague Two"],
+    "capture_cooldown_sec": 3.0
   },
 
   "project": {

@@ -6,8 +6,13 @@
 # ── Core (required) ──────────────────────────────────────────────
 sounddevice>=0.4.6      # audio capture from the Aggregate Device
 numpy>=1.24             # audio mixing / resampling / embedding math
-boto3>=1.34             # Amazon Bedrock (Claude Opus 5) client
 pynput>=1.7             # global hotkeys (⌃⌥1/3/4/R/M) — needs Accessibility perm
+
+# ── Claude access — install the one(s) matching your setup ───────
+# AWS users (Bedrock, default when no ANTHROPIC_API_KEY is set):
+boto3>=1.34             # Amazon Bedrock (Claude Opus 5) client
+# Non-AWS users (Anthropic API — set ANTHROPIC_API_KEY, provider "auto"/"anthropic"):
+anthropic>=1.0          # direct Claude API client
 
 # ── macOS integration (required for global hotkeys, on-device OCR,
 #    frontmost-app detection, and multi-display screenshots) ──────

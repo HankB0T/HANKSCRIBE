@@ -5,13 +5,14 @@ echo "🎙️  Hankscribe 2.0 — Real-time Transcription + Claude Q&A"
 echo "========================================================"
 echo ""
 
-# Pick the interpreter: prefer Homebrew Python 3.13 (has audio deps),
-# fall back to any Homebrew python3, then system python3.
+# Pick the interpreter: prefer the newest Homebrew Python (Apple Silicon or
+# Intel prefix), then system python3. No version-pinned paths — those break
+# on every brew upgrade.
 PYTHON=""
 for candidate in \
-    /opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/bin/python3.13 \
     /opt/homebrew/bin/python3.13 \
     /opt/homebrew/bin/python3 \
+    /usr/local/bin/python3 \
     python3; do
     if command -v "$candidate" >/dev/null 2>&1; then
         PYTHON="$candidate"
@@ -46,6 +47,11 @@ check Quartz pyobjc-framework-Quartz
 # Vision.framework is loaded at runtime via objc.loadBundle (no top-level import).
 # Detect the pyobjc Vision metadata package by its module name.
 "$PYTHON" -c "import Vision" 2>/dev/null || MISSING="$MISSING pyobjc-framework-Vision"
+# Anthropic API users (no AWS account): the SDK is only needed when an API key
+# is present or the config pins provider=anthropic.
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+    check anthropic anthropic
+fi
 
 if [ -n "$MISSING" ]; then
     echo "⚠️  Installing missing packages:$MISSING"

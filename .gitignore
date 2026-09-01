@@ -22,6 +22,9 @@ screenshots/
 Transcripts/
 *_meeting.txt
 
+# Working-session records (conversation logs, raw transcripts, handoffs)
+session_context/
+
 # Whisper model weights (download separately — see README)
 *.bin
 

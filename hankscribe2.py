@@ -9,6 +9,7 @@ Controls:
   4  →  Screenshot current screen for additional context (this session only)
   r  →  Burst recording: poll the screen, keep frames on meaningful change
   m  →  Choose AI model/mode from a menu (Opus deep/fast/quick, Sonnet, Haiku)
+  c  →  Settings menu: switch/create projects, edit folders, AI provider
   s  →  Show session stats
   q  →  Quit (auto-saves transcript + post-meeting digest)
 
@@ -208,22 +209,70 @@ OLLAMA_URL     = "http://127.0.0.1:11434/api/generate"
 EMBED_MODEL    = CFG["ai"]["embed_model"]
 EMBED_URL      = "http://127.0.0.1:11434/api/embed"
 
-PROJECT_DIR     = os.path.expanduser(CFG["paths"]["project_dir"])
-MASTER_CONTEXT  = os.path.expanduser(CFG["paths"]["master_context"])
-TRANSCRIPT_DIR  = os.path.expanduser(CFG["paths"]["transcript_dir"])
-CONTEXT_FILE    = os.path.join(BASE_DIR, CFG["paths"].get("context_index", "context-index.json"))
 CORRECTIONS_FILE = os.path.join(BASE_DIR, "transcription-corrections.json")
 SCREENSHOT_DIR  = os.path.join(BASE_DIR, "screenshots")
-EMBED_VEC_FILE  = os.path.join(BASE_DIR, "embeddings.npz")
-EMBED_META_FILE = os.path.join(BASE_DIR, "embeddings-meta.json")
+
+# ── Project profiles ────────────────────────────────────────────────────────
+# A project can span SEVERAL folders (project_dirs is a list), and config.json
+# can hold multiple named projects under "projects" with an "active" pointer.
+# The `c` key switches projects live. Legacy single "paths" config still works.
+
+ACTIVE_PROJECT  = None
+PROJECT_DIRS    = []
+MASTER_CONTEXT  = ""
+TRANSCRIPT_DIR  = ""
+CONTEXT_FILE    = ""
+EMBED_VEC_FILE  = ""
+EMBED_META_FILE = ""
+PROJECT_NAME    = "the project"
+PROJECT_DESC    = "the project"
+
+
+def _active_profile():
+    """(profile_name_or_None, merged path settings) for the active project."""
+    projects = CFG.get("projects") or {}
+    active = projects.get("active")
+    prof = dict(CFG.get("paths", {}))
+    if active and isinstance(projects.get(active), dict):
+        prof.update(projects[active])
+        return active, prof
+    return None, prof
+
+
+def _as_dir_list(v):
+    if isinstance(v, str):
+        v = [v]
+    return [os.path.expanduser(d) for d in (v or []) if d]
+
+
+def apply_project_profile():
+    """Resolve the active project's folders/files into the globals the rest
+    of the app reads. Embedding caches are per-project (named after the
+    context index) so switching projects doesn't throw work away."""
+    global ACTIVE_PROJECT, PROJECT_DIRS, MASTER_CONTEXT, TRANSCRIPT_DIR
+    global CONTEXT_FILE, EMBED_VEC_FILE, EMBED_META_FILE, PROJECT_NAME, PROJECT_DESC
+    name, prof = _active_profile()
+    ACTIVE_PROJECT = name
+    PROJECT_DIRS   = _as_dir_list(prof.get("project_dirs") or prof.get("project_dir"))
+    MASTER_CONTEXT = os.path.expanduser(prof.get("master_context") or "")
+    TRANSCRIPT_DIR = os.path.expanduser(prof.get("transcript_dir")
+                                        or "~/Documents/Hankscribe-Transcripts")
+    index_name = prof.get("context_index", "context-index.json")
+    CONTEXT_FILE = os.path.join(BASE_DIR, index_name)
+    stem = os.path.splitext(index_name)[0]
+    EMBED_VEC_FILE  = os.path.join(BASE_DIR, f"embeddings-{stem}.npz")
+    EMBED_META_FILE = os.path.join(BASE_DIR, f"embeddings-{stem}-meta.json")
+    fallback = CFG.get("project", {})
+    PROJECT_NAME = prof.get("name") or name or fallback.get("name", "the project")
+    PROJECT_DESC = prof.get("description") or fallback.get("description", PROJECT_NAME)
+
+
+apply_project_profile()
 
 FEATURES  = CFG["features"]
 USER_NAME = CFG["user"]["name"]
 USER_ROLE = CFG["user"]["role"]
 USER_NAME_VARIANTS = [v.lower() for v in CFG["user"]["name_variants"]]
-PROJECT   = CFG.get("project", {})
-PROJECT_NAME = PROJECT.get("name", "the project")
-PROJECT_DESC = PROJECT.get("description", PROJECT_NAME)
 MAX_ATTACHED_SCREENSHOTS = FEATURES["max_attached_screenshots"]
 
 RECORDING            = CFG.get("recording", {})
@@ -1059,6 +1108,182 @@ def _pick_ai_mode_inline():
         out("  \033[90m(mode unchanged)\033[0m\n")
 
 
+# ── Settings menu (`c` key) — a small config GUI in the terminal ──────────────
+
+def _update_config_file(mutate):
+    """Apply a change to config.json on disk (preserving the user's file
+    structure) — the in-app menu writes through this."""
+    path = os.path.join(BASE_DIR, "config.json")
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+    except Exception:
+        raw = {}
+    mutate(raw)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(raw, f, indent=2, ensure_ascii=False)
+
+
+def _read_line_inline(label):
+    """Read one typed line from raw stdin (keyboard-listener thread only)."""
+    sys.stdout.write(f"  {label}: ")
+    sys.stdout.flush()
+    buf = ""
+    while True:
+        ch = sys.stdin.read(1)
+        if ch in ('\r', '\n'):
+            sys.stdout.write('\r\n')
+            return buf.strip()
+        if ch == '\x1b':
+            sys.stdout.write('\r\n')
+            return ""
+        if ch == '\x03':
+            os.kill(os.getpid(), signal.SIGINT)
+            return ""
+        if ch in ('\x7f', '\x08'):
+            if buf:
+                buf = buf[:-1]
+                sys.stdout.write('\b \b')
+        elif ch.isprintable():
+            buf += ch
+            sys.stdout.write(ch)
+        sys.stdout.flush()
+
+
+def _project_names():
+    return [k for k in (CFG.get("projects") or {}) if k != "active" and
+            isinstance(CFG["projects"][k], dict)]
+
+
+def switch_project(name):
+    """Switch the active project live: repoint folders, reset every cache,
+    and rebuild/reload the index + embeddings in the background."""
+    global _master_context_cache, _master_context_mtime
+    CFG.setdefault("projects", {})["active"] = name
+    _update_config_file(lambda raw: raw.setdefault("projects", {}).update(active=name))
+    apply_project_profile()
+    _master_context_cache, _master_context_mtime = None, 0
+    _context_index_cache.update(mtime=None, data=None)
+    with _embed_lock:
+        _embed_index.update(ready=False, built_at=None, vecs=None, chunks=None)
+    try:
+        os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+    except OSError:
+        pass
+    out(f"\n  \033[1;35mProject → {PROJECT_NAME}\033[0m "
+        f"({len(PROJECT_DIRS)} folder(s); transcripts → {TRANSCRIPT_DIR})")
+    if context_is_stale():
+        out("  Rebuilding this project's index in the background...")
+        rebuild_context_async()
+    else:
+        build_embeddings_async()
+
+
+def _settings_menu_inline():
+    """`c` menu. MUST run on the keyboard-listener thread (raw stdin)."""
+    global AI_PROVIDER
+    out()
+    out(f"  \033[1mSettings\033[0m   project: \033[1;35m{PROJECT_NAME}\033[0m · provider: \033[1;35m{AI_PROVIDER}\033[0m")
+    out("    \033[1m1\033[0m  Switch project")
+    out("    \033[1m2\033[0m  New project (name + folders)")
+    out("    \033[1m3\033[0m  Edit active project's folders")
+    out("    \033[1m4\033[0m  AI provider")
+    out("    \033[1m5\033[0m  Show current settings")
+    out("    \033[1m0\033[0m  close")
+    out()
+    ch = sys.stdin.read(1)
+
+    if ch == '1':
+        names = _project_names()
+        if not names:
+            out("  \033[33mNo projects defined yet — use option 2 to create one.\033[0m\n")
+            return
+        out("  \033[1mSwitch to which project?\033[0m")
+        for i, n in enumerate(names[:9], 1):
+            mark = "  ← active" if n == ACTIVE_PROJECT else ""
+            out(f"    \033[1m{i}\033[0m  {n}{mark}")
+        d = sys.stdin.read(1)
+        if d.isdigit() and 1 <= int(d) <= len(names[:9]):
+            switch_project(names[int(d) - 1])
+
+    elif ch == '2':
+        name = _read_line_inline("Project name (e.g. Hackathon)")
+        if not name:
+            return
+        dirs_raw = _read_line_inline("Folder path(s), comma-separated")
+        dirs = [d.strip() for d in dirs_raw.split(",") if d.strip()]
+        good = [d for d in dirs if os.path.isdir(os.path.expanduser(d))]
+        bad = [d for d in dirs if d not in good]
+        for b in bad:
+            out(f"  \033[33m⚠ Not a folder, skipped: {b}\033[0m")
+        if not good:
+            out("  \033[33mNo valid folders — project not created.\033[0m\n")
+            return
+        profile = {
+            "project_dirs": good,
+            "transcript_dir": os.path.join(good[0], "Transcripts"),
+            "context_index": f"{re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')}-context.json",
+            "description": name,
+        }
+        def add(raw):
+            raw.setdefault("projects", {})[name] = profile
+        _update_config_file(add)
+        CFG.setdefault("projects", {})[name] = profile
+        out(f"  \033[32m✓ Project '{name}' created\033[0m")
+        switch_project(name)
+
+    elif ch == '3':
+        out(f"  Current folders: {', '.join(PROJECT_DIRS) or '(none)'}")
+        dirs_raw = _read_line_inline("New folder path(s), comma-separated (Esc = keep)")
+        if not dirs_raw:
+            return
+        dirs = [d.strip() for d in dirs_raw.split(",") if d.strip()]
+        good = [d for d in dirs if os.path.isdir(os.path.expanduser(d))]
+        for b in [d for d in dirs if d not in good]:
+            out(f"  \033[33m⚠ Not a folder, skipped: {b}\033[0m")
+        if not good:
+            return
+        active = ACTIVE_PROJECT
+        def setdirs(raw):
+            if active and active in raw.get("projects", {}):
+                raw["projects"][active]["project_dirs"] = good
+            else:
+                raw.setdefault("paths", {})["project_dirs"] = good
+        _update_config_file(setdirs)
+        if active and active in CFG.get("projects", {}):
+            CFG["projects"][active]["project_dirs"] = good
+        else:
+            CFG.setdefault("paths", {})["project_dirs"] = good
+        switch_project(active) if active else (apply_project_profile(), rebuild_context_async())
+        out(f"  \033[32m✓ Folders updated ({len(good)})\033[0m\n")
+
+    elif ch == '4':
+        options = ["auto", "bedrock", "anthropic", "openai", "gemini", "custom"]
+        out("  \033[1mAI provider:\033[0m")
+        for i, p in enumerate(options, 1):
+            mark = "  ← current setting" if CFG["ai"].get("provider", "auto") == p else ""
+            out(f"    \033[1m{i}\033[0m  {p}{mark}")
+        d = sys.stdin.read(1)
+        if d.isdigit() and 1 <= int(d) <= len(options):
+            choice = options[int(d) - 1]
+            CFG["ai"]["provider"] = choice
+            _update_config_file(lambda raw: raw.setdefault("ai", {}).update(provider=choice))
+            AI_PROVIDER = resolve_provider()
+            out(f"  \033[1;35mProvider → {AI_PROVIDER}"
+                f"{' (resolved from auto)' if choice == 'auto' else ''}\033[0m\n")
+
+    elif ch == '5':
+        out(f"  Project:    {PROJECT_NAME}" + (f" (profile '{ACTIVE_PROJECT}')" if ACTIVE_PROJECT else " (legacy paths)"))
+        for d in PROJECT_DIRS:
+            out(f"    folder:   {d}{'' if os.path.isdir(d) else '  ⚠ missing'}")
+        out(f"    index:    {os.path.basename(CONTEXT_FILE)}")
+        out(f"    transcripts: {TRANSCRIPT_DIR}")
+        out(f"  AI:         {AI_PROVIDER} · mode {current_mode()['label']}")
+        out(f"  Whisper:    {os.path.basename(WHISPER_MODEL)}")
+        out(f"  Speakers:   {'on' if SPEAKER_NAMES_ON else 'off'} · roster {len(SPEAKER_ROSTER)} name(s)")
+        out()
+
+
 def build_system_prompt():
     """Static per-session prefix — identical across calls so Bedrock's prompt
     cache can serve it at ~10% of the input cost after the first call."""
@@ -1307,16 +1532,17 @@ def context_is_stale():
         return True
     index_mtime = os.path.getmtime(CONTEXT_FILE)
     supported = {'.md', '.txt', '.vtt', '.docx', '.pdf', '.pptx', '.olm'}
-    for root, dirs, files in os.walk(PROJECT_DIR):
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
-        for name in files:
-            if os.path.splitext(name)[1].lower() in supported:
-                path = os.path.join(root, name)
-                try:
-                    if os.path.getmtime(path) > index_mtime:
-                        return True
-                except OSError:
-                    pass
+    for project_dir in PROJECT_DIRS:
+        for root, dirs, files in os.walk(project_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            for name in files:
+                if os.path.splitext(name)[1].lower() in supported:
+                    path = os.path.join(root, name)
+                    try:
+                        if os.path.getmtime(path) > index_mtime:
+                            return True
+                    except OSError:
+                        pass
     return False
 
 
@@ -2127,24 +2353,31 @@ def handle_capture_screenshot():
     file_size = os.path.getsize(filepath)
     metrics.record_storage(file_size)
 
-    # Read the screen with FREE on-device OCR (instant, exact text) instead of
-    # paying a Claude vision call per screenshot. Claude only describes frames
-    # that have too little text to be searchable (diagrams, photos, charts).
+    # Read the screen with FREE on-device OCR (instant, exact text). OCR alone
+    # can't express STRUCTURE though — an architecture diagram's boxes and
+    # arrows carry the meaning, not just its labels. So: dense text (docs,
+    # code, tables) stays OCR-only; sparse text (diagrams, charts, photos)
+    # gets BOTH the OCR labels and a Claude description of the structure.
     ocr_text = _vision_ocr(filepath)
-    if len(ocr_text) >= BURST_THIN_OCR_CHARS:
+    diagram_threshold = FEATURES.get("screenshot_visual_threshold_chars", 1000)
+    if len(ocr_text) >= diagram_threshold:
         description = ocr_text
         how = f"{len(ocr_text):,} chars of on-screen text read locally, free"
     else:
-        description = ask_claude_with_image(
-            "Describe this visual content in detail: layout, connections, "
-            "labels, and meaning. List every name, ID, number, and date you can read.",
-            filepath, max_tokens=400
+        visual = ask_claude_with_image(
+            "This is likely a diagram, chart, or visual. Describe its "
+            "STRUCTURE precisely: every box/component, what connects to what "
+            "(arrows and their direction), groupings, and what the whole "
+            "thing represents. Include every label, name, ID, and number.",
+            filepath, max_tokens=500
         )
-        if not description or description.startswith("[Screenshot analysis failed"):
+        if visual and not visual.startswith("[Screenshot analysis failed"):
+            description = (f"[VISUAL STRUCTURE]\n{visual}"
+                           + (f"\n\n[EXACT TEXT ON SCREEN]\n{ocr_text}" if ocr_text else ""))
+            how = f"diagram/visual — structure read by Claude + {len(ocr_text)} chars OCR"
+        else:
             description = ocr_text or "[No text detected on screen]"
             how = "little text found; visual description unavailable"
-        else:
-            how = "low-text screen — described by Claude"
 
     ts = datetime.now().strftime("%H:%M:%S")
     with screenshot_lock:
@@ -3404,6 +3637,8 @@ def keyboard_listener():
             elif ch == 'm':
                 # Menu reads its digit right here in the listener thread
                 _pick_ai_mode_inline()
+            elif ch == 'c':
+                _settings_menu_inline()
             elif ch == 'r':
                 if burst_active:
                     threading.Thread(target=toggle_burst_recording, daemon=True).start()
@@ -3513,6 +3748,7 @@ def main():
     out("    \033[1m4\033[0m → Screenshot for context (this session only)")
     out("    \033[1mr\033[0m → Record screen changes (searchable app picker) until pressed again")
     out("    \033[1mm\033[0m → Choose AI model/mode (menu: Opus deep/fast/quick, Sonnet, Haiku)")
+    out("    \033[1mc\033[0m → Settings: switch project, folders, AI provider")
     out("    \033[1ms\033[0m → Show session stats (calls, cost, storage)")
     out("    \033[1mq\033[0m → Quit (auto-saves + digest)")
     out()

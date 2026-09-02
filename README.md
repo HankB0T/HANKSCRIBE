@@ -151,9 +151,17 @@ pip install -r requirements.txt
 python3 build-context.py
 ```
 
-Put the docs you want the AI to draw on in `paths.project_dir`. Supported file
-types: `.md .txt .vtt .docx .pdf .pptx .olm`. Re-run `build-context.py` when they
-change (the app also auto-rebuilds when it detects changes on startup).
+Put the docs you want the AI to draw on in your project folder(s). Supported
+file types: `.md .txt .vtt .docx .pdf .pptx .olm`. Re-run `build-context.py`
+when they change (the app also auto-rebuilds when it detects changes on
+startup).
+
+**Multiple folders & multiple projects.** A project can span several folders
+(`project_dirs` is a list), and `config.json` can define several named
+projects under `"projects"` (see the template). Press **`c`** in the app to
+switch projects, create one, edit folders, or change the AI provider — no
+restart, no manual JSON editing. Each project keeps its own search index and
+embeddings, so switching back is instant.
 
 ---
 
@@ -175,6 +183,7 @@ python3 hankscribe2.py
 | `4` | Screenshot current screen for context |
 | `r` | Start/stop screen recording — app picker lists every running app; type to search, 1-9 to pick, Enter for first match, 0 for all screens, Esc to cancel |
 | `m` | Choose the AI model/mode from a menu: Opus 5 deep / fast / quick, Sonnet 4.5, Haiku 4.5 — with speed and cost shown per option (`⌃⌥M` cycles them) |
+| `c` | Settings menu: switch between projects, create a project, edit its folders, change AI provider — all saved to config.json, no restart needed |
 | `s` | Show session stats (calls, cost, storage) |
 | `q` | Quit — saves transcript + generates the post-meeting digest |
 

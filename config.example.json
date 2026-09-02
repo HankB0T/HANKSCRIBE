@@ -8,6 +8,23 @@
     "context_index": "context-index.json"
   },
 
+  "projects": {
+    "active": "MyProject",
+    "MyProject": {
+      "project_dirs": ["~/Desktop/MyProject", "~/Desktop/MyProject-Docs"],
+      "master_context": "~/Desktop/MyProject/Master_Context.md",
+      "transcript_dir": "~/Desktop/MyProject/Transcripts",
+      "context_index": "myproject-context.json",
+      "description": "one-line description used in the AI's system prompt"
+    },
+    "SideProject": {
+      "project_dirs": ["~/Desktop/SideProject"],
+      "transcript_dir": "~/Desktop/SideProject/Transcripts",
+      "context_index": "sideproject-context.json",
+      "description": "press c in the app to switch between projects"
+    }
+  },
+
   "audio": {
     "preferred_devices": ["Aggregate Device", "BlackHole 2ch"],
     "sample_rate": 48000,
@@ -58,7 +75,8 @@
     "post_meeting_digest": true,
     "answer_suggestions": true,
     "burst_recording": true,
-    "max_attached_screenshots": 3
+    "max_attached_screenshots": 3,
+    "screenshot_visual_threshold_chars": 1000
   },
 
   "recording": {

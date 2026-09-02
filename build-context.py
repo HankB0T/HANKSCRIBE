@@ -19,24 +19,31 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _load_paths():
-    """Read project_dir and the index filename from config.json, falling back
-    to sensible generic defaults if the file or keys are missing."""
-    project_dir = "~/Desktop/MyProject"
-    index_name = "context-index.json"
+    """Resolve the ACTIVE project's folder list + index filename. A project
+    may span several folders (paths.project_dirs is a list), and config.json
+    may define multiple named projects under "projects" with an "active" key."""
+    prof = {}
     try:
         with open(os.path.join(BASE_DIR, "config.json"), "r", encoding="utf-8") as f:
             cfg = json.load(f)
-        paths = cfg.get("paths", {})
-        project_dir = paths.get("project_dir", project_dir)
-        index_name = paths.get("context_index", index_name)
+        prof = dict(cfg.get("paths", {}))
+        projects = cfg.get("projects") or {}
+        active = projects.get("active")
+        if active and isinstance(projects.get(active), dict):
+            prof.update(projects[active])
+            print(f"  Project: {active}")
     except FileNotFoundError:
         print("  ⚠ config.json not found — using default project dir")
     except Exception as e:
         print(f"  ⚠ config.json unreadable ({e}) — using defaults")
-    return os.path.expanduser(project_dir), os.path.join(BASE_DIR, index_name)
+    dirs = prof.get("project_dirs") or prof.get("project_dir") or "~/Desktop/MyProject"
+    if isinstance(dirs, str):
+        dirs = [dirs]
+    index_name = prof.get("context_index", "context-index.json")
+    return [os.path.expanduser(d) for d in dirs], os.path.join(BASE_DIR, index_name)
 
 
-PROJECT_DIR, OUTPUT_FILE = _load_paths()
+PROJECT_DIRS, OUTPUT_FILE = _load_paths()
 
 SUPPORTED_EXTENSIONS = {'.md', '.txt', '.vtt', '.docx', '.pdf', '.pptx', '.olm'}
 
@@ -155,32 +162,42 @@ def _load_previous_index():
 
 
 def build_context():
-    project_path = Path(PROJECT_DIR)
-    if not project_path.exists():
-        print(f"  ✗ Directory not found: {project_path}")
-        print(f"    Set paths.project_dir in config.json to your project folder.")
+    roots = [Path(d) for d in PROJECT_DIRS if Path(d).exists()]
+    missing = [d for d in PROJECT_DIRS if not Path(d).exists()]
+    for m in missing:
+        print(f"  ⚠ Folder not found (skipped): {m}")
+    if not roots:
+        print(f"  ✗ No project folder exists — set project_dirs in config.json")
         return None
 
-    print(f"  Scanning: {project_path}")
     previous = _load_previous_index()
     reused = 0
 
     context_data = {
         'built_at': datetime.now().isoformat(),
-        'source_dir': str(project_path),
+        'source_dirs': [str(r) for r in roots],
         'files': [],
         'file_count': 0,
         'total_chars': 0
     }
 
-    for filepath in sorted(project_path.rglob('*')):
-        if filepath.is_file() and filepath.suffix.lower() in SUPPORTED_EXTENSIONS:
+    all_files = []
+    for root in roots:
+        print(f"  Scanning: {root}")
+        for filepath in sorted(root.rglob('*')):
+            if filepath.is_file() and filepath.suffix.lower() in SUPPORTED_EXTENSIONS:
+                all_files.append((root, filepath))
+
+    for project_path, filepath in all_files:
+        if True:
             # Skip huge files (>500KB text) — likely raw email dumps
             if filepath.stat().st_size > 500_000 and filepath.suffix.lower() == '.olm':
                 print(f"    Skip (too large): {filepath.name}")
                 continue
 
-            rel_path = str(filepath.relative_to(project_path))
+            # Prefix with the root folder's name so files from different
+            # folders can't collide in the index
+            rel_path = f"{project_path.name}/{filepath.relative_to(project_path)}"
             stat = filepath.stat()
             modified = datetime.fromtimestamp(stat.st_mtime).isoformat()
 

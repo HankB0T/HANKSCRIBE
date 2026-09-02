@@ -241,6 +241,16 @@ template with comments). Highlights:
 - **"Anthropic API unavailable, using Ollama fallback"** — check that
   `ANTHROPIC_API_KEY` is exported in the shell that launches the app and that
   `pip install anthropic` has run for the same interpreter.
+- **Transcript only shows [You], never [Them] (common with headsets)** — the
+  meeting app is sending the other side's audio straight to your headset,
+  bypassing BlackHole. The app warns about this ~75s in. Fix: meeting app →
+  Settings → Audio → Speaker = "Multi-Output Device" (or "Same as System"
+  with System Sound Output = Multi-Output), and make sure BlackHole 2ch is
+  ticked inside the Multi-Output Device in Audio MIDI Setup.
+- **No cloud account at all?** Set `ai.provider: "ollama"` for fully local,
+  free Q&A (`brew install ollama`, `ollama serve`, `ollama pull llama3.2:3b`).
+  Screenshot descriptions are unavailable in this mode (no vision model);
+  transcription is unaffected.
 - **Volume keys don't work during meetings** — that's macOS, not Hankscribe:
   the volume keys are disabled whenever sound goes through a Multi-Output
   Device (the BlackHole + headphones combo). Workarounds: change volume

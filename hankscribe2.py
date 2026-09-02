@@ -733,10 +733,40 @@ class VadSegmenter:
 segmenter = VadSegmenter()
 
 
+# Peaks per side, for the routing watchdog: BlackHole silent while the mic
+# hears you = the meeting app is sending audio straight to a headset,
+# bypassing BlackHole — the #1 "empty [Them] transcript" cause.
+_audio_flow = {"blackhole": 0.0, "mic": 0.0}
+
+
 def audio_callback(indata, frames, time_info, status):
+    if indata.ndim > 1 and indata.shape[1] > MIC_CHANNEL:
+        bh = float(np.abs(indata[:, :2]).max())
+        mic = float(np.abs(indata[:, MIC_CHANNEL]).max())
+        if bh > _audio_flow["blackhole"]:
+            _audio_flow["blackhole"] = bh
+        if mic > _audio_flow["mic"]:
+            _audio_flow["mic"] = mic
     segment = segmenter.feed(indata)
     if segment is not None:
         audio_queue.put(segment)
+
+
+def audio_routing_watchdog():
+    """Warn once if no meeting audio ever reaches BlackHole — otherwise the
+    user sits through a meeting and discovers an empty transcript afterwards."""
+    time.sleep(75)
+    if not running or _audio_flow["blackhole"] >= 0.001:
+        return
+    heard_user = _audio_flow["mic"] >= 0.001
+    out("")
+    out("  \033[1;33m⚠ No meeting audio has reached BlackHole yet"
+        + (" (your own mic works)" if heard_user else "") + "\033[0m")
+    out("    You'll only get [You] lines until this is fixed:")
+    out("    1. Meeting app → Settings → Audio → \033[1mSpeaker = 'Multi-Output Device'\033[0m")
+    out("       (or 'Same as System', with System Settings → Sound → Output = Multi-Output)")
+    out("    2. Audio MIDI Setup → Multi-Output Device → tick \033[1mBlackHole 2ch\033[0m + your headphones")
+    out("")
 
 
 def transcription_worker():
@@ -877,7 +907,8 @@ def _custom_configured():
 
 def resolve_provider():
     configured = CFG["ai"].get("provider", "auto")
-    if configured in ("bedrock", "anthropic", "openai", "gemini", "custom"):
+    # "ollama" = local-only mode: no cloud keys needed at all
+    if configured in ("bedrock", "anthropic", "openai", "gemini", "custom", "ollama"):
         return configured
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "anthropic"
@@ -1258,7 +1289,7 @@ def _settings_menu_inline():
         out(f"  \033[32m✓ Folders updated ({len(good)})\033[0m\n")
 
     elif ch == '4':
-        options = ["auto", "bedrock", "anthropic", "openai", "gemini", "custom"]
+        options = ["auto", "bedrock", "anthropic", "openai", "gemini", "custom", "ollama"]
         out("  \033[1mAI provider:\033[0m")
         for i, p in enumerate(options, 1):
             mark = "  ← current setting" if CFG["ai"].get("provider", "auto") == p else ""
@@ -1304,6 +1335,9 @@ def ask_claude(prompt, max_tokens=None, image_paths=None, system=None, model_ove
     """Call Claude on the active provider. Images attach as pixels; the system
     prompt is cache_control-marked so the static project context is billed once."""
     global claude_available
+    if AI_PROVIDER == "ollama":        # local-only mode: ask_ai goes straight to Ollama
+        claude_available = False
+        return None
     mode = model_override or current_mode()
     try:
         if image_paths:
@@ -1371,6 +1405,8 @@ def ask_claude(prompt, max_tokens=None, image_paths=None, system=None, model_ove
 
 def ask_claude_with_image(prompt, image_path, max_tokens=500):
     # Screenshot inventory always uses the cheap utility mode
+    if AI_PROVIDER == "ollama":
+        return "[Screenshot analysis failed: local-only mode has no vision model]"
     try:
         with open(image_path, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode()
@@ -3859,13 +3895,22 @@ def main():
         "gemini":    f"Google Gemini ({GEMINI_MODEL} — free tier available)",
         "custom":    f"custom endpoint ({CUSTOM_MODEL} @ {CUSTOM_BASE_URL})",
         "bedrock":   "AWS Bedrock (Claude Opus 5)",
+        "ollama":    f"Ollama (local, free — {OLLAMA_MODEL})",
     }
-    provider_label = provider_labels[AI_PROVIDER]
+    provider_label = provider_labels.get(AI_PROVIDER, f"{AI_PROVIDER}")
     out(f"  AI: testing {provider_label}...")
     # Utility mode (thinking off) for the self-test: in deep mode, adaptive
     # thinking can consume a tiny max_tokens before any text is emitted,
     # spuriously reporting the backend as unavailable.
-    test = ask_claude("Say OK", max_tokens=10, model_override=UTILITY_MODE)
+    if AI_PROVIDER == "ollama":
+        test = ask_ollama("Say OK", max_tokens=10)
+        if not test:
+            out(f"  AI: \033[33m{provider_label} not reachable — run: ollama serve\033[0m")
+        else:
+            out(f"  AI: \033[32m{provider_label} ready\033[0m")
+        test = True   # skip the cloud-provider hint block below
+    else:
+        test = ask_claude("Say OK", max_tokens=10, model_override=UTILITY_MODE)
     if test:
         out(f"  AI: \033[32m{provider_label} ready\033[0m")
     else:
@@ -3948,6 +3993,7 @@ def main():
     threading.Thread(target=keyboard_listener, daemon=True).start()
     threading.Thread(target=whisper_health_monitor, daemon=True).start()
     threading.Thread(target=title_bar_updater, daemon=True).start()
+    threading.Thread(target=audio_routing_watchdog, daemon=True).start()
     global_hotkey_listener()
 
     try:

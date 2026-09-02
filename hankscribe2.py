@@ -1969,7 +1969,7 @@ def _find_speaker_in_panel_text(ocr_text):
     for line in ocr_text.splitlines():
         line = line.strip().rstrip(".")
         low = line.lower()
-        if not line or low in _UI_PHRASES or low in USER_NAME_VARIANTS:
+        if not line or low in _UI_PHRASES or _is_user_name(low):
             continue
         if _NAME_LINE_RE.match(line):                       # "First Last"
             candidates.append(line)
@@ -1984,6 +1984,45 @@ def _find_speaker_in_panel_text(ocr_text):
 def is_them(speaker):
     """True for the other side of the call — '[Them]' or a resolved name."""
     return bool(speaker) and speaker != "You"
+
+
+def _is_user_name(text):
+    """True if the text contains the user's name in any variant — 'Shashank
+    Gopalan' must match even though only 'shashank' is in the variants."""
+    low = (text or "").lower()
+    return any(v in low for v in USER_NAME_VARIANTS)
+
+
+# "Name: spoken text" (Zoom captions) — name-shaped, then colon, then speech
+_CAPTION_INLINE_RE = re.compile(
+    r"^([A-Z][\w.'\-]+(?: [A-Z][\w.'\-]+){0,2})\s*[::]\s+(.{8,})$")
+
+
+def _captions_speaker(ocr_text):
+    """Active speaker from LIVE CAPTIONS on screen — the most reliable source
+    on Teams/Zoom (turn captions on in the meeting app). Zoom renders
+    'Name: text'; Teams renders the name on its own line above the caption.
+    Takes the LAST match, i.e. the most recent caption."""
+    if not ocr_text:
+        return ""
+    lines = [l.strip() for l in ocr_text.splitlines() if l.strip()]
+    last = ""
+    for i, l in enumerate(lines):
+        m = _CAPTION_INLINE_RE.match(l)
+        if m:
+            cand = m.group(1)
+            if (not _is_user_name(cand)
+                    and cand.lower() not in _UI_WORDS
+                    and cand.lower() not in _UI_PHRASES):
+                last = cand
+            continue
+        # Teams style: a pure name line immediately followed by caption text
+        if _NAME_LINE_RE.match(l) and l.lower() not in _UI_PHRASES \
+                and not _is_user_name(l) and i + 1 < len(lines):
+            nxt = lines[i + 1]
+            if len(nxt) > 12 and (nxt[0].islower() or nxt[-1] in '.…,?'):
+                last = l
+    return _snap_to_roster(last) if last else ""
 
 
 def _find_speaker_in_ocr(ocr_text):
@@ -2002,7 +2041,7 @@ def _find_speaker_in_ocr(ocr_text):
     m = _SPEAKING_RE.search(ocr_text)
     if m:
         name = m.group(1).strip()
-        if name.lower() not in USER_NAME_VARIANTS:
+        if not _is_user_name(name):
             return name
 
     roster_low = {n.lower(): n for n in SPEAKER_ROSTER}
@@ -2024,7 +2063,7 @@ def _find_speaker_in_ocr(ocr_text):
     for line in ocr_text.splitlines():
         line = line.strip().rstrip(".")
         low = line.lower()
-        if not line or low in _UI_PHRASES or low in USER_NAME_VARIANTS:
+        if not line or low in _UI_PHRASES or _is_user_name(low):
             continue
         if _NAME_LINE_RE.match(line):
             r = roster_name_for(low)
@@ -2072,6 +2111,9 @@ def _refresh_speaker_name(line_index):
             # capture-proof windows (Zoom/Teams tiles) included, and no pixels.
             name = _ax_speaker_name()
             if not name:
+                # Window titles: free metadata, works on capture-proof tiles
+                name = _title_speaker_name()
+            if not name:
                 panel = _find_speaker_panel()
                 if panel and _capture_window(panel["id"], tmp):
                     name = _find_speaker_in_panel_text(_vision_ocr(tmp))
@@ -2080,7 +2122,11 @@ def _refresh_speaker_name(line_index):
                                 str(display_under_cursor()), tmp],
                                capture_output=True, timeout=5)
                 if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
-                    name = _find_speaker_in_ocr(_vision_ocr(tmp))
+                    screen_text = _vision_ocr(tmp)
+                    # Live captions first (per-utterance accuracy when the
+                    # meeting app's captions are on), then the strict rules
+                    name = _captions_speaker(screen_text) or \
+                           _find_speaker_in_ocr(screen_text)
         finally:
             try:
                 os.unlink(tmp)          # deleted immediately — never kept
@@ -2629,8 +2675,27 @@ def _ax_window_strings(pid, per_window_budget=250, max_windows=6):
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface", kCFBooleanTrue)
         except Exception:
             pass
+        windows = None
         err, windows = AXUIElementCopyAttributeValue(app, "AXWindows", None)
         if err != 0 or not windows:
+            # New Teams / WebView apps often expose nothing under AXWindows —
+            # try the focused/main window and the app element's own children
+            collected = []
+            for attr in ("AXFocusedWindow", "AXMainWindow"):
+                try:
+                    e, w = AXUIElementCopyAttributeValue(app, attr, None)
+                    if e == 0 and w is not None:
+                        collected.append(w)
+                except Exception:
+                    pass
+            try:
+                e, kids = AXUIElementCopyAttributeValue(app, "AXChildren", None)
+                if e == 0 and kids:
+                    collected.extend(list(kids)[:max_windows])
+            except Exception:
+                pass
+            windows = collected
+        if not windows:
             return []
         results = []
         for w in list(windows)[:max_windows]:
@@ -2679,6 +2744,81 @@ def _ax_speaker_name():
                 votes.append(n)
     uniq = list(dict.fromkeys(votes))
     return uniq[0] if len(uniq) == 1 else ""
+
+
+def _title_speaker_name():
+    """Names from meeting-app WINDOW TITLES. Titles are metadata, not pixels,
+    so they're readable even for capture-proof floating tiles — and Zoom's
+    mini window title is often literally the active speaker's name."""
+    votes = []
+    for w in _on_screen_windows():
+        owner = w["owner"].lower()
+        if not any(m in owner for m in MEETING_APP_NAMES):
+            continue
+        title = (w["title"] or "").strip()
+        if not title or len(title) > 60:
+            continue
+        n = _find_speaker_in_panel_text(title)
+        if n:
+            votes.append(n)
+    uniq = list(dict.fromkeys(votes))
+    return uniq[0] if len(uniq) == 1 else ""
+
+
+def speaker_diagnostic():
+    """`n` key: dump what every speaker-detection layer sees RIGHT NOW.
+    Run this during a meeting and screenshot the output to debug naming."""
+    out()
+    out("  \033[1;36m━━ SPEAKER DETECTION DIAGNOSTIC ━━\033[0m")
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+        out(f"  Accessibility permission: {'✓ granted' if AXIsProcessTrusted() else '✗ MISSING — this is likely the whole problem'}")
+    except Exception:
+        out("  Accessibility permission: unknown")
+
+    pids = _meeting_app_pids()
+    out(f"  Meeting apps running: {[n for _, n in pids] or 'NONE — is the meeting app open?'}")
+
+    for pid, name in pids:
+        wins = _ax_window_strings(pid)
+        out(f"  [AX] {name}: {len(wins)} window(s)")
+        for i, strings in enumerate(wins[:4]):
+            n = _find_speaker_in_panel_text("\n".join(strings)) if strings and len(strings) <= 120 else ""
+            sample = "; ".join(strings[:5])[:90]
+            out(f"       w{i}: {len(strings)} strings → name={n or '—'} | {sample}")
+    out(f"  [AX] combined verdict: {_ax_speaker_name() or '—'}")
+
+    titled = [(w['owner'], w['title'], w['w'], w['h'], w['layer'])
+              for w in _on_screen_windows()
+              if any(m in w['owner'].lower() for m in MEETING_APP_NAMES)]
+    out(f"  [Titles] meeting-app windows on screen: {len(titled)}")
+    for o, t, ww, hh, l in titled[:6]:
+        out(f"       {o} | title={t[:40]!r} | {int(ww)}x{int(hh)} layer {l}")
+    out(f"  [Titles] verdict: {_title_speaker_name() or '—'}")
+
+    panel = _find_speaker_panel()
+    if panel:
+        out(f"  [Panel] smallest meeting window: {panel['owner']} {int(panel['w'])}x{int(panel['h'])}")
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            tmp = f.name
+        try:
+            if _capture_window(panel["id"], tmp):
+                t = _vision_ocr(tmp)
+                out(f"  [Panel] capture OK, OCR {len(t)} chars → name={_find_speaker_in_panel_text(t) or '—'}")
+                if t:
+                    out(f"          text: {t[:120]!r}")
+            else:
+                out("  [Panel] capture BLOCKED (window is capture-proof — expected for Zoom/Teams tiles)")
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    else:
+        out("  [Panel] no small meeting window found (tile hidden or meeting full-screen?)")
+    out(f"  Cached name: {cached_speaker_name() or '—'} | roster: {len(SPEAKER_ROSTER)} name(s)")
+    out("  \033[1;36m━━ screenshot this block and share it ━━\033[0m")
+    out()
 
 
 def _find_speaker_panel():
@@ -3639,6 +3779,8 @@ def keyboard_listener():
                 _pick_ai_mode_inline()
             elif ch == 'c':
                 _settings_menu_inline()
+            elif ch == 'n':
+                threading.Thread(target=speaker_diagnostic, daemon=True).start()
             elif ch == 'r':
                 if burst_active:
                     threading.Thread(target=toggle_burst_recording, daemon=True).start()

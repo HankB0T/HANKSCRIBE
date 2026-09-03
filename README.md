@@ -89,11 +89,12 @@ You need these installed **before** first run:
 
 ### Audio setup (one time)
 
-Open **Audio MIDI Setup** → create an **Aggregate Device** that combines
-**BlackHole 2ch** + your microphone. Route your meeting app's output to
-BlackHole (or a Multi-Output Device) so the app hears both sides. The mic is
-expected on channel index `mic_channel` (default `2`) — adjust in config if your
-aggregate device orders channels differently.
+**Follow [AUDIO-SETUP.md](AUDIO-SETUP.md)** — 7 numbered steps, ~5 minutes on
+a new Mac. Or run `./SETTINGS.command`: its **"Audio setup — new-Mac
+checklist"** scans your audio devices live and shows ✓/✗ per step with the
+exact fix. Summary: BlackHole 2ch + an **Aggregate Device** (BlackHole + mic;
+mic on channel `mic_channel`, default `2`) + a **Multi-Output Device**
+(headphones + BlackHole) that the meeting app's *speaker* must point at.
 
 #### Headphones — wired, Bluetooth, and swapping pairs
 
@@ -173,6 +174,24 @@ embeddings, so switching back is instant.
 python3 hankscribe2.py
 ```
 
+### Settings window (before launch)
+
+```bash
+./SETTINGS.command     # or: python3 settings.py
+```
+
+Opens a local settings page in your browser (served on 127.0.0.1 only —
+nothing leaves your machine) to edit config.json before Hankscribe starts:
+project folders, **speaker roster**, AI provider/keys, audio, Whisper,
+feature toggles. **Save & Launch** writes config.json and starts Hankscribe.
+First run of `START.command` opens it automatically. The in-app `c` menu
+still handles live changes mid-meeting.
+
+> **Speaker names:** only names on the roster (`speakers.roster`) can ever
+> appear as speaker labels — keep it complete for your regular meetings.
+> Press `n` during a meeting to diagnose speaker detection (live audio
+> channel levels + every naming layer's verdict).
+
 ### Controls (terminal focused)
 
 | Key | Action |
@@ -184,6 +203,7 @@ python3 hankscribe2.py
 | `r` | Start/stop screen recording — app picker lists every running app; type to search, 1-9 to pick, Enter for first match, 0 for all screens, Esc to cancel |
 | `m` | Choose the AI model/mode from a menu: Opus 5 deep / fast / quick, Sonnet 4.5, Haiku 4.5 — with speed and cost shown per option (`⌃⌥M` cycles them) |
 | `c` | Settings menu: switch between projects, create a project, edit its folders, change AI provider — all saved to config.json, no restart needed |
+| `n` | Speaker-detection diagnostic: live audio channel levels, AX/title/OCR naming verdicts |
 | `s` | Show session stats (calls, cost, storage) |
 | `q` | Quit — saves transcript + generates the post-meeting digest |
 

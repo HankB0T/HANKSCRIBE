@@ -394,6 +394,20 @@ burst_thread         = None     # the polling daemon thread
 burst_session_count  = 0        # increments per burst started this session
 
 # ── Output helpers ─────────────────────────────────────────────────────────────
+# COLOR CONVENTION (keep every new message consistent with this):
+#   \033[1;36m bold cyan     — section titles / headers
+#   \033[32m   green         — success ✓ (inline/startup status)
+#   \033[33m   yellow        — warnings ⚠ (inline/startup status)
+#   \033[1;32m bold green    — success banner mid-meeting; the [You] tag
+#   \033[1;33m bold yellow   — warning banner mid-meeting; input prompts
+#   \033[1;31m bold red      — errors ✗; recording indicators
+#   \033[1;35m bold magenta  — state changes (mode/provider/project) and the
+#                              "← current" selection marker (use _CURRENT_MARK)
+#   \033[1;34m bold blue     — speaker names / the [Them] tag
+#   \033[90m   gray          — de-emphasis / hints
+# Rule of thumb: bold = must catch the eye mid-meeting; plain = status lines.
+
+_CURRENT_MARK = "  \033[1;35m← current\033[0m"
 
 ASK_PROMPT   = "  \033[1;33mAsk:\033[0m "
 input_state  = {"active": False, "buffer": ""}
@@ -736,37 +750,74 @@ segmenter = VadSegmenter()
 # Peaks per side, for the routing watchdog: BlackHole silent while the mic
 # hears you = the meeting app is sending audio straight to a headset,
 # bypassing BlackHole — the #1 "empty [Them] transcript" cause.
-_audio_flow = {"blackhole": 0.0, "mic": 0.0}
+# ch_peaks holds per-channel peaks since the last reset, for the `n`
+# diagnostic's live level meter (spots a wrong mic_channel or dead BlackHole).
+_audio_flow = {"blackhole": 0.0, "mic": 0.0, "ch_peaks": None,
+               "lock": threading.Lock()}
 
 
 def audio_callback(indata, frames, time_info, status):
     if indata.ndim > 1 and indata.shape[1] > MIC_CHANNEL:
-        bh = float(np.abs(indata[:, :2]).max())
-        mic = float(np.abs(indata[:, MIC_CHANNEL]).max())
+        peaks = np.abs(indata).max(axis=0)
+        mic = float(peaks[MIC_CHANNEL])
+        # "Meeting side" = every channel that isn't the mic (same rule as
+        # detect_speaker) — not hardcoded 0-1, which breaks when the mic
+        # isn't the aggregate's last sub-device.
+        bh = float(np.delete(peaks, MIC_CHANNEL).max())
         if bh > _audio_flow["blackhole"]:
             _audio_flow["blackhole"] = bh
         if mic > _audio_flow["mic"]:
             _audio_flow["mic"] = mic
+        with _audio_flow["lock"]:
+            cp = _audio_flow["ch_peaks"]
+            if cp is None or len(cp) != len(peaks):
+                _audio_flow["ch_peaks"] = peaks.copy()
+            else:
+                np.maximum(cp, peaks, out=cp)
     segment = segmenter.feed(indata)
     if segment is not None:
         audio_queue.put(segment)
 
 
-def audio_routing_watchdog():
-    """Warn once if no meeting audio ever reaches BlackHole — otherwise the
-    user sits through a meeting and discovers an empty transcript afterwards."""
-    time.sleep(75)
-    if not running or _audio_flow["blackhole"] >= 0.001:
-        return
-    heard_user = _audio_flow["mic"] >= 0.001
-    out("")
-    out("  \033[1;33m⚠ No meeting audio has reached BlackHole yet"
-        + (" (your own mic works)" if heard_user else "") + "\033[0m")
-    out("    You'll only get [You] lines until this is fixed:")
+def audio_levels_snapshot(window_sec=3.0):
+    """Reset the per-channel peak meter, wait, and return the peaks seen in
+    that window (numpy array or None). Used by the `n` diagnostic."""
+    with _audio_flow["lock"]:
+        _audio_flow["ch_peaks"] = None
+    time.sleep(window_sec)
+    with _audio_flow["lock"]:
+        cp = _audio_flow["ch_peaks"]
+        return None if cp is None else cp.copy()
+
+
+def _print_routing_help():
     out("    1. Meeting app → Settings → Audio → \033[1mSpeaker = 'Multi-Output Device'\033[0m")
     out("       (or 'Same as System', with System Settings → Sound → Output = Multi-Output)")
     out("    2. Audio MIDI Setup → Multi-Output Device → tick \033[1mBlackHole 2ch\033[0m + your headphones")
-    out("")
+
+
+def audio_routing_watchdog():
+    """Warn if no meeting audio reaches BlackHole — otherwise the user sits
+    through a meeting and discovers an empty transcript afterwards. Keeps
+    checking so a mid-meeting routing fix gets a visible all-clear."""
+    time.sleep(75)
+    warned = False
+    while running:
+        if _audio_flow["blackhole"] >= 0.001:
+            if warned:
+                out("  \033[1;32m✓ Meeting audio is now reaching BlackHole — [Them] lines will appear\033[0m")
+            return
+        if not warned:
+            heard_user = _audio_flow["mic"] >= 0.001
+            out("")
+            out("  \033[1;33m⚠ No meeting audio has reached BlackHole yet"
+                + (" (your own mic works)" if heard_user else "") + "\033[0m")
+            out("    You'll only get [You] lines until this is fixed:")
+            _print_routing_help()
+            out("    (press \033[1mn\033[0m for a live audio-level check)")
+            out("")
+            warned = True
+        time.sleep(15)
 
 
 def transcription_worker():
@@ -1123,7 +1174,7 @@ def _pick_ai_mode_inline():
     out(f"     {'Mode':<17}{'Best for':<30}{'Speed':<9}Cost/answer")
     for i, key in enumerate(MODE_ORDER, 1):
         name, best, speed, cost = AI_MODES[key]["menu"]
-        mark = "  \033[1;35m← current\033[0m" if key == cur else ""
+        mark = _CURRENT_MARK if key == cur else ""
         out(f"  \033[1m{i}\033[0m  {name:<17}{best:<30}{speed:<9}{cost}{mark}")
     out(f"  \033[1m0\033[0m  cancel")
     if AI_PROVIDER not in ("bedrock", "anthropic"):
@@ -1231,7 +1282,7 @@ def _settings_menu_inline():
             return
         out("  \033[1mSwitch to which project?\033[0m")
         for i, n in enumerate(names[:9], 1):
-            mark = "  ← active" if n == ACTIVE_PROJECT else ""
+            mark = _CURRENT_MARK if n == ACTIVE_PROJECT else ""
             out(f"    \033[1m{i}\033[0m  {n}{mark}")
         d = sys.stdin.read(1)
         if d.isdigit() and 1 <= int(d) <= len(names[:9]):
@@ -1292,7 +1343,7 @@ def _settings_menu_inline():
         options = ["auto", "bedrock", "anthropic", "openai", "gemini", "custom", "ollama"]
         out("  \033[1mAI provider:\033[0m")
         for i, p in enumerate(options, 1):
-            mark = "  ← current setting" if CFG["ai"].get("provider", "auto") == p else ""
+            mark = _CURRENT_MARK if CFG["ai"].get("provider", "auto") == p else ""
             out(f"    \033[1m{i}\033[0m  {p}{mark}")
         d = sys.stdin.read(1)
         if d.isdigit() and 1 <= int(d) <= len(options):
@@ -1960,7 +2011,9 @@ _UI_PHRASES = {
     "notification center", "screen share", "control strip", "now presenting",
 }
 
-# Single words that appear in a mini speaker tile but are never names
+# Single words that appear on screen (meeting UI, email fields, consoles,
+# system dialogs) but are never names. The second group are words a live
+# meeting actually produced as bogus speaker labels via shared-screen OCR.
 _UI_WORDS = {
     "mute", "unmute", "muted", "chat", "share", "record", "recording", "more",
     "react", "view", "camera", "mic", "you", "waiting", "connecting",
@@ -1969,6 +2022,13 @@ _UI_WORDS = {
     "window", "notification", "notifications", "settings", "home", "untitled",
     "desktop", "dock", "loading", "search", "close", "minimize", "zoom",
     "teams", "slack", "webex", "meet", "meeting", "calendar", "activity",
+    "cc", "bcc", "subject", "password", "pass", "region", "open", "canceled",
+    "cancelled", "cancel", "transcript", "transcripts", "apple", "enabled",
+    "disabled", "instance", "instances", "capslock", "current", "copy",
+    "paste", "save", "edit", "delete", "next", "back", "done", "accept",
+    "decline", "join", "admit", "everyone", "options", "caption", "captions",
+    "device", "devices", "security", "help", "info", "details", "status",
+    "screen", "sharing", "shared", "present", "presenter",
 }
 
 
@@ -1982,23 +2042,65 @@ def _one_typo_apart(a, b):
     return any(l[:i] + l[i + 1:] == s for i in range(len(l)))
 
 
-def _snap_to_roster(name):
-    """Fix OCR spelling: return the roster version of `name` if one matches
-    (containment or one-typo per word), else `name` unchanged."""
-    low = name.lower()
+def _roster_match(name):
+    """The roster entry `name` refers to, or ''. Match = a roster name
+    contained in the candidate, or one OCR typo off any candidate word."""
+    low = (name or "").lower()
     for r in SPEAKER_ROSTER:
         rl = r.lower()
         if rl in low:
             return r
         if any(_one_typo_apart(tok, rl) for tok in re.findall(r"[a-z'.\-]+", low)):
             return r
-    return name
+    return ""
+
+
+def _snap_to_roster(name):
+    """Fix OCR spelling: return the roster version of `name` if one matches,
+    else `name` unchanged."""
+    return _roster_match(name) or name
+
+
+def _validated_speaker(candidate):
+    """The gate EVERY naming source passes through before a candidate may
+    become a transcript label. With a roster configured, ONLY roster names
+    (exact, contained, or one OCR typo off) are ever emitted — a live meeting
+    proved that anything looser labels lines with screen-share text
+    ('Instance ID', 'Region', 'Cc', 'Password', 'Capslock Enabled', ...).
+    Without a roster, only a strict 'First Last' shape (2-3 words, each ≥3
+    chars, no UI words) is accepted. Returns the canonical name or ''."""
+    if not candidate:
+        return ""
+    cand = candidate.strip().rstrip(".")
+    low = cand.lower()
+    if not low or low in _UI_PHRASES or low in _UI_WORDS or _is_user_name(low):
+        return ""
+    if SPEAKER_ROSTER:
+        return _roster_match(cand)
+    return _shape_valid_name(cand)
+
+
+def _shape_valid_name(candidate):
+    """'First Last' (2-3 words, each a ≥3-char capitalized word, none a UI
+    word) or ''. The fallback identity test when no roster is configured,
+    and the escape hatch for explicit '<Name> is speaking' banners."""
+    cand = (candidate or "").strip().rstrip(".")
+    if cand.lower() in _UI_PHRASES:
+        return ""
+    words = cand.split()
+    if len(words) < 2 or len(words) > 3:
+        return ""
+    for w in words:
+        if len(w) < 3 or w.lower() in _UI_WORDS or not re.fullmatch(r"[A-Z][a-z'.\-]+", w):
+            return ""
+    return " ".join(words)
 
 
 def _find_speaker_in_panel_text(ocr_text):
-    """Names from the mini speaker tile — ADAPTIVE, no roster needed. The
-    panel is tiny and shows little besides the current speaker's name, so any
-    single name-shaped line is trusted (the roster only fixes spelling)."""
+    """Names from the mini speaker tile. Candidates are collected adaptively
+    (the panel is tiny and shows little besides the current speaker's name),
+    but every candidate must clear _validated_speaker — with a roster set,
+    that means roster names only."""
     if not ocr_text:
         return ""
     candidates = []
@@ -2014,7 +2116,7 @@ def _find_speaker_in_panel_text(ocr_text):
     uniq = list(dict.fromkeys(candidates))
     if len(uniq) != 1:
         return ""                                           # 0 or 2+: no guess
-    return _snap_to_roster(uniq[0])
+    return _validated_speaker(uniq[0])
 
 
 def is_them(speaker):
@@ -2038,7 +2140,12 @@ def _captions_speaker(ocr_text):
     """Active speaker from LIVE CAPTIONS on screen — the most reliable source
     on Teams/Zoom (turn captions on in the meeting app). Zoom renders
     'Name: text'; Teams renders the name on its own line above the caption.
-    Takes the LAST match, i.e. the most recent caption."""
+    Takes the LAST match, i.e. the most recent caption.
+
+    Every candidate MUST clear _validated_speaker: a shared screen is full of
+    'Label: value' text ('Instance ID: ...', 'Region: ...', 'Password: ...')
+    that is indistinguishable from a Zoom caption by shape alone — a live
+    meeting produced exactly those as speaker labels before this gate."""
     if not ocr_text:
         return ""
     lines = [l.strip() for l in ocr_text.splitlines() if l.strip()]
@@ -2046,19 +2153,20 @@ def _captions_speaker(ocr_text):
     for i, l in enumerate(lines):
         m = _CAPTION_INLINE_RE.match(l)
         if m:
-            cand = m.group(1)
-            if (not _is_user_name(cand)
-                    and cand.lower() not in _UI_WORDS
-                    and cand.lower() not in _UI_PHRASES):
+            cand = _validated_speaker(m.group(1))
+            if cand:
                 last = cand
             continue
-        # Teams style: a pure name line immediately followed by caption text
-        if _NAME_LINE_RE.match(l) and l.lower() not in _UI_PHRASES \
-                and not _is_user_name(l) and i + 1 < len(lines):
+        # Teams style: a pure name line immediately followed by caption text.
+        # Lone first names count too — the roster gate keeps junk out.
+        if (_NAME_LINE_RE.match(l) or re.fullmatch(r"[A-Z][\w'.\-]{2,19}", l)) \
+                and i + 1 < len(lines):
             nxt = lines[i + 1]
             if len(nxt) > 12 and (nxt[0].islower() or nxt[-1] in '.…,?'):
-                last = l
-    return _snap_to_roster(last) if last else ""
+                cand = _validated_speaker(l)
+                if cand:
+                    last = cand
+    return last
 
 
 def _find_speaker_in_ocr(ocr_text):
@@ -2078,7 +2186,11 @@ def _find_speaker_in_ocr(ocr_text):
     if m:
         name = m.group(1).strip()
         if not _is_user_name(name):
-            return name
+            # Explicit banner is strong evidence, but still gate it: roster
+            # match wins; otherwise it must at least look like a real name.
+            valid = _roster_match(name) or _shape_valid_name(name)
+            if valid:
+                return valid
 
     roster_low = {n.lower(): n for n in SPEAKER_ROSTER}
 
@@ -2806,6 +2918,28 @@ def speaker_diagnostic():
     Run this during a meeting and screenshot the output to debug naming."""
     out()
     out("  \033[1;36m━━ SPEAKER DETECTION DIAGNOSTIC ━━\033[0m")
+
+    # Audio first: [Them] depends on meeting audio reaching BlackHole and on
+    # mic_channel pointing at the real mic — both visible from channel levels.
+    out(f"  [Audio] measuring channel levels for 3s — say something now...")
+    levels = audio_levels_snapshot(3.0)
+    if levels is None:
+        out("  [Audio] ✗ no audio blocks arriving (device has too few channels, or stream stalled)")
+    else:
+        cols = "  ".join(
+            f"ch{i}{'(mic)' if i == MIC_CHANNEL else '(meeting)'}={v:.4f}"
+            for i, v in enumerate(levels))
+        out(f"  [Audio] peaks: {cols}")
+        mic_v = levels[MIC_CHANNEL] if len(levels) > MIC_CHANNEL else 0.0
+        meet_v = float(np.delete(levels, MIC_CHANNEL).max()) if len(levels) > 1 else 0.0
+        if mic_v < 0.001 and meet_v >= 0.001:
+            out(f"  [Audio] \033[33m⚠ mic channel {MIC_CHANNEL} is silent but another channel is live —\033[0m")
+            out(f"  \033[33m        if YOU were speaking, audio.mic_channel in config.json is probably wrong\033[0m")
+        if meet_v < 0.001:
+            out("  [Audio] \033[33m⚠ meeting channels silent — if others were speaking, fix routing:\033[0m")
+            _print_routing_help()
+    out(f"  [Audio] session peaks: meeting={_audio_flow['blackhole']:.4f} mic={_audio_flow['mic']:.4f}")
+
     try:
         from ApplicationServices import AXIsProcessTrusted
         out(f"  Accessibility permission: {'✓ granted' if AXIsProcessTrusted() else '✗ MISSING — this is likely the whole problem'}")
@@ -3129,12 +3263,20 @@ def stop_burst():
 
 
 def _detect_frontmost_for_hotkey():
-    """Detect the frontmost app for the global hotkey context.
+    """Detect the app the ⌃⌥R hotkey should record: the frontmost app — or,
+    when the frontmost app is the terminal Hankscribe runs in, the most recent
+    NON-terminal app (tracked by title_bar_updater). Without that substitution
+    the hotkey recorded 'all screens' whenever it was pressed with the
+    terminal focused, and _last_non_terminal_app was never used at all.
     Returns (name, bundle) or None."""
     result = _get_frontmost_app()
-    if result and result[0]:
-        return result
-    return None
+    if not (result and result[0]):
+        return _last_non_terminal_app
+    name, bundle = result
+    TERMINAL_BUNDLES = {"com.apple.terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty"}
+    if bundle.lower() in TERMINAL_BUNDLES or name.lower() in ("terminal", "iterm2", "iterm"):
+        return _last_non_terminal_app
+    return result
 
 
 def _get_running_apps():
@@ -3773,7 +3915,7 @@ def global_hotkey_listener():
             '<ctrl>+<alt>+4': make(handle_capture_screenshot),       # screenshot
             '<ctrl>+<alt>+r': lambda: threading.Thread(
                 target=toggle_burst_recording,
-                args=(_detect_frontmost_for_hotkey() or _last_non_terminal_app,),
+                args=(_detect_frontmost_for_hotkey(),),
                 daemon=True).start(),
             '<ctrl>+<alt>+m': toggle_ai_mode,
         })
@@ -3903,15 +4045,11 @@ def main():
     # thinking can consume a tiny max_tokens before any text is emitted,
     # spuriously reporting the backend as unavailable.
     if AI_PROVIDER == "ollama":
-        test = ask_ollama("Say OK", max_tokens=10)
-        if not test:
-            out(f"  AI: \033[33m{provider_label} not reachable — run: ollama serve\033[0m")
-        else:
+        if ask_ollama("Say OK", max_tokens=10):
             out(f"  AI: \033[32m{provider_label} ready\033[0m")
-        test = True   # skip the cloud-provider hint block below
-    else:
-        test = ask_claude("Say OK", max_tokens=10, model_override=UTILITY_MODE)
-    if test:
+        else:
+            out(f"  AI: \033[33m{provider_label} not reachable — run: ollama serve\033[0m")
+    elif ask_claude("Say OK", max_tokens=10, model_override=UTILITY_MODE):
         out(f"  AI: \033[32m{provider_label} ready\033[0m")
     else:
         out(f"  AI: \033[33m{provider_label} unavailable, using Ollama fallback\033[0m")
@@ -3936,6 +4074,7 @@ def main():
     out("    \033[1mr\033[0m → Record screen changes (searchable app picker) until pressed again")
     out("    \033[1mm\033[0m → Choose AI model/mode (menu: Opus deep/fast/quick, Sonnet, Haiku)")
     out("    \033[1mc\033[0m → Settings: switch project, folders, AI provider")
+    out("    \033[1mn\033[0m → Diagnose speaker detection ([Them] audio levels + naming)")
     out("    \033[1ms\033[0m → Show session stats (calls, cost, storage)")
     out("    \033[1mq\033[0m → Quit (auto-saves + digest)")
     out()

@@ -27,6 +27,12 @@ Transcripts/
 # Working-session records (conversation logs, raw transcripts, handoffs)
 session_context/
 
+# Test captures — real meeting content (client data), never publish
+testing/
+*.rtf
+SESSION_REPORT_*.md
+audio setup/
+
 # Whisper model weights (download separately — see README)
 *.bin
 

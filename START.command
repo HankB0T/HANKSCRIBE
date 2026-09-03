@@ -21,12 +21,14 @@ for candidate in \
 done
 echo "Python: $PYTHON"
 
-# First run: create personal config from the templates if missing
+# First run: create personal config from the template and open the Settings
+# window to fill it in. Its "Save & Launch" button re-runs this script.
 if [ ! -f "config.json" ] && [ -f "config.example.json" ]; then
-    echo "⚠️  No config.json found — creating one from config.example.json."
-    echo "    Edit config.json (project_dir, whisper.model, user/project) then re-run."
+    echo "⚠️  First run — opening the Settings window to configure Hankscribe."
     cp config.example.json config.json
+    exec "$PYTHON" settings.py
 fi
+echo "Tip: double-click SETTINGS.command to change settings before launching."
 if [ ! -f "transcription-corrections.json" ] && [ -f "transcription-corrections.example.json" ]; then
     cp transcription-corrections.example.json transcription-corrections.json
 fi
